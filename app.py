@@ -128,15 +128,61 @@ input:focus, textarea:focus {
 [data-baseweb="menu"] { background:#120826 !important; }
 [data-baseweb="option"]:hover { background:rgba(130,60,255,.18) !important; }
 
+/* file uploader — hide ALL internal content, show clean drop zone via pseudo */
+[data-testid="stFileUploader"] label { display:none !important; }
 [data-testid="stFileUploader"] section {
+    position:relative !important;
     background:rgba(255,255,255,.025) !important;
-    border:1.5px dashed rgba(130,80,255,.32) !important; border-radius:14px !important;
-    transition:border-color .2s,background .2s;
+    border:1.5px dashed rgba(130,80,255,.32) !important;
+    border-radius:12px !important;
+    transition:border-color .2s, background .2s;
+    min-height:44px !important;
+    padding:0 !important;
+    cursor:pointer !important;
+    overflow:hidden !important;
 }
 [data-testid="stFileUploader"] section:hover {
-    border-color:rgba(160,110,255,.6) !important; background:rgba(120,60,255,.06) !important;
+    border-color:rgba(160,110,255,.6) !important;
+    background:rgba(120,60,255,.06) !important;
 }
-[data-testid="stFileUploaderDropzone"] { background:transparent !important; }
+/* fake label shown to user */
+[data-testid="stFileUploader"] section::after {
+    content:'📎  Click or drag & drop to upload';
+    position:absolute; inset:0;
+    display:flex; align-items:center; justify-content:center;
+    font-size:.8rem; font-weight:600;
+    color:rgba(196,165,253,.75);
+    pointer-events:none;
+}
+/* make the dropzone fill the whole section so clicks/drops work */
+[data-testid="stFileUploaderDropzone"] {
+    position:absolute !important; inset:0 !important;
+    background:transparent !important;
+    min-height:unset !important;
+    padding:0 !important;
+    gap:0 !important;
+}
+/* hide all the internal Streamlit-rendered children visually */
+[data-testid="stFileUploaderDropzoneInstructions"],
+[data-testid="stFileUploaderDropzone"] > span,
+[data-testid="stFileUploaderDropzone"] button {
+    opacity:0 !important;
+    pointer-events:none !important;
+    position:absolute !important;
+    inset:0 !important;
+    width:100% !important;
+    height:100% !important;
+}
+/* but keep the actual hidden <input> interactive for click-to-browse */
+[data-testid="stFileUploaderDropzoneInput"] {
+    opacity:0 !important;
+    position:absolute !important;
+    inset:0 !important;
+    width:100% !important;
+    height:100% !important;
+    cursor:pointer !important;
+    pointer-events:all !important;
+}
 
 /* primary button */
 button[kind="primary"], [data-testid="baseButton-primary"] {
