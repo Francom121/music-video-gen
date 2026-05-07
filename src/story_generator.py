@@ -33,6 +33,8 @@ def generate_scenes(brief, style_input, model="claude-sonnet-4-6"):
     character = style_input.get("character", "")
     reference = style_input.get("reference", "")
     video_tool = style_input.get("video_tool", "grok")
+    style_ref = style_input.get("style_ref", "")
+    location = style_input.get("location", "")
 
     prompt = _build_scene_prompt(
         brief=brief,
@@ -42,6 +44,8 @@ def generate_scenes(brief, style_input, model="claude-sonnet-4-6"):
         reference=reference,
         video_tool=video_tool,
         n_scenes=n_scenes,
+        style_ref=style_ref,
+        location=location,
     )
 
     message = client.messages.create(
@@ -148,13 +152,13 @@ Return ONLY a JSON object (no fences):
     return _parse_json(text)
 
 
-def _build_scene_prompt(*, brief, project_type, tone, character, reference, video_tool, n_scenes):
-    char_block = ""
+def _build_scene_prompt(*, brief, project_type, tone, character, reference, video_tool, n_scenes,
+                        style_ref="", location=""):
     if character:
         char_block = f"""
-PROTAGONIST / CHARACTER REFERENCE:
+CHARACTERS:
 {character}
-Describe this character specifically in every scene they appear in so AI tools render them consistently.
+Describe each character specifically in every scene they appear in so AI tools render them consistently. If multiple characters appear together, describe all of them.
 """
     else:
         char_block = """
@@ -163,12 +167,15 @@ Invent a compelling protagonist that fits the brief. Describe them physically in
 they appear in so AI tools render them consistently across shots.
 """
 
+    style_ref_block = f"\nSTYLE REFERENCE: {style_ref}\nIncorporate this visual style into all scene and prompt descriptions.\n" if style_ref else ""
+    location_block = f"\nPRIMARY LOCATION / ENVIRONMENT: {location}\nUse this as the main world/setting where appropriate, referencing specific details in scene prompts.\n" if location else ""
+
     return f"""PROJECT BRIEF:
 Type: {project_type}
 Tone: {tone or "(infer from brief)"}
 Reference / Inspiration: {reference or "(none)"}
 Target video tool: {video_tool}
-{char_block}
+{char_block}{style_ref_block}{location_block}
 STORY / IDEA:
 {brief}
 

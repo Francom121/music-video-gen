@@ -361,54 +361,139 @@ with st.sidebar:
     st.divider()
 
     # ── shared settings ────────────────────────────────────────────────────
-    st.markdown('<p class="lbl">🎭 Protagonist / Character</p>', unsafe_allow_html=True)
-    st.markdown('<p style="color:rgba(148,112,255,.4);font-size:.72rem;margin-bottom:.4rem;line-height:1.45">Upload a photo — Claude will describe your character automatically. Or leave blank and Claude invents one.</p>', unsafe_allow_html=True)
+    import base64, anthropic as _ant
 
-    char_img = st.file_uploader("char_img", type=["jpg","jpeg","png","webp"],
-                                label_visibility="collapsed", key="char_img_upload")
+    def _vision_describe(img_file, prompt_text, spinner_label, cache_key, max_tokens=300):
+        """Run Claude Vision on an uploaded file; cache result by content hash."""
+        img_bytes = img_file.read()
+        img_hash = hash(img_bytes)
+        if st.session_state.get(cache_key + "_hash") == img_hash:
+            return st.session_state.get(cache_key + "_desc", "")
+        with st.spinner(spinner_label):
+            try:
+                ext = img_file.name.rsplit(".", 1)[-1].lower()
+                media_type = {"jpg":"image/jpeg","jpeg":"image/jpeg",
+                              "png":"image/png","webp":"image/webp"}.get(ext,"image/jpeg")
+                b64 = base64.standard_b64encode(img_bytes).decode()
+                resp = _ant.Anthropic().messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=max_tokens,
+                    messages=[{"role":"user","content":[
+                        {"type":"image","source":{"type":"base64","media_type":media_type,"data":b64}},
+                        {"type":"text","text":prompt_text},
+                    ]}],
+                )
+                desc = resp.content[0].text.strip()
+                st.session_state[cache_key + "_hash"] = img_hash
+                st.session_state[cache_key + "_desc"] = desc
+                return desc
+            except Exception as e:
+                st.warning(f"Could not describe image: {e}")
+                return ""
 
-    if char_img is not None:
-        img_bytes = char_img.read()
-        img_key = hash(img_bytes)
-        if st.session_state.get("char_img_key") != img_key:
-            st.session_state["char_img_key"] = img_key
-            with st.spinner("Describing character…"):
-                try:
-                    import base64, anthropic as _ant
-                    _client = _ant.Anthropic()
-                    ext = char_img.name.rsplit(".", 1)[-1].lower()
-                    media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
-                                  "png": "image/png", "webp": "image/webp"}.get(ext, "image/jpeg")
-                    b64 = base64.standard_b64encode(img_bytes).decode()
-                    resp = _client.messages.create(
-                        model="claude-haiku-4-5-20251001",
-                        max_tokens=300,
-                        messages=[{"role": "user", "content": [
-                            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
-                            {"type": "text", "text": (
-                                "Describe this person for use as a consistent protagonist in an AI visual project. "
-                                "Cover: approximate age, build/physique, hair (color, length, style), skin tone, "
-                                "facial features, clothing visible in the photo, and overall vibe/presence. "
-                                "Write 2-3 sentences, purely descriptive, no names. Start with 'A [age] [gender]…'"
-                            )},
-                        ]}],
-                    )
-                    desc = resp.content[0].text.strip()
-                    st.session_state["char_description"] = desc
-                except Exception as e:
-                    st.session_state["char_description"] = ""
-                    st.warning(f"Could not describe image: {e}")
+    # ── Characters (up to 4) ───────────────────────────────────────────────
+    st.markdown('<p class="lbl">🎭 Characters</p>', unsafe_allow_html=True)
+    st.markdown('<p style="color:rgba(148,112,255,.4);font-size:.72rem;margin-bottom:.5rem;line-height:1.45">Upload up to 4 character photos — Claude auto-describes each. Leave all blank and Claude invents them.</p>', unsafe_allow_html=True)
 
-    char_desc_default = st.session_state.get("char_description", "")
-    character = st.text_area(
-        "char_desc",
-        value=char_desc_default,
-        placeholder="Description appears here after upload, or type manually…",
-        height=90,
+    MAX_CHARS = 4
+    char_labels = ["Protagonist", "Character 2", "Character 3", "Character 4"]
+    char_descriptions = []
+
+    for ci in range(MAX_CHARS):
+        ck = f"char_{ci}"
+        with st.expander(f"{'👤 ' if ci == 0 else '👥 '}{char_labels[ci]}", expanded=(ci == 0)):
+            uploaded = st.file_uploader(
+                f"Upload {char_labels[ci]} photo",
+                type=["jpg","jpeg","png","webp"],
+                label_visibility="collapsed",
+                key=f"{ck}_upload",
+            )
+            if uploaded is not None:
+                desc = _vision_describe(
+                    uploaded,
+                    "Describe this person for use as a consistent character in an AI visual project. "
+                    "Cover: approximate age, build/physique, hair (color, length, style), skin tone, "
+                    "facial features, clothing visible in the photo, and overall vibe/presence. "
+                    "Write 2-3 sentences, purely descriptive, no names. Start with 'A [age] [gender]…'",
+                    f"Describing {char_labels[ci]}…",
+                    ck,
+                )
+                if desc:
+                    st.session_state[f"{ck}_desc"] = desc
+
+            saved_desc = st.session_state.get(f"{ck}_desc", "")
+            desc_val = st.text_area(
+                f"{char_labels[ci]} description",
+                value=saved_desc,
+                placeholder="Auto-filled after upload, or type manually…",
+                height=80,
+                label_visibility="collapsed",
+                key=f"{ck}_desc_box",
+            )
+            st.session_state[f"{ck}_desc"] = desc_val
+            if desc_val.strip():
+                char_descriptions.append((char_labels[ci], desc_val.strip()))
+
+    # Build the combined character string fed into prompts
+    if char_descriptions:
+        character = "\n".join(f"{label}: {desc}" for label, desc in char_descriptions)
+    else:
+        character = ""
+
+    # ── Style Reference Image ──────────────────────────────────────────────
+    st.divider()
+    st.markdown('<p class="lbl">🎨 Style Reference Image</p>', unsafe_allow_html=True)
+    st.markdown('<p style="color:rgba(148,112,255,.4);font-size:.72rem;margin-bottom:.4rem;line-height:1.45">Upload a mood board, film still, or artwork — Claude extracts the visual style.</p>', unsafe_allow_html=True)
+    style_ref_img = st.file_uploader("Style reference", type=["jpg","jpeg","png","webp"],
+                                     label_visibility="collapsed", key="style_ref_upload")
+    if style_ref_img is not None:
+        style_ref_desc = _vision_describe(
+            style_ref_img,
+            "Describe the visual style of this image for use as a style reference in an AI video/image generation project. "
+            "Cover: color palette, lighting mood, texture/grain, art direction, era/period feel, and overall aesthetic. "
+            "Write 2-3 sentences focused on visual qualities only, no story. "
+            "Start with the dominant aesthetic (e.g. 'Dark neo-noir…', 'Warm golden-hour…').",
+            "Extracting style…",
+            "style_ref",
+            max_tokens=250,
+        )
+        st.session_state["style_ref_desc"] = style_ref_desc
+    style_ref_text = st.text_area(
+        "style_ref_desc_box",
+        value=st.session_state.get("style_ref_desc", ""),
+        placeholder="Auto-filled after upload, or type manually…",
+        height=75,
         label_visibility="collapsed",
-        key="char_desc_box",
+        key="style_ref_desc_box",
     )
-    st.session_state["char_description"] = character
+    st.session_state["style_ref_desc"] = style_ref_text
+
+    # ── Location / Environment Reference ──────────────────────────────────
+    st.markdown('<p class="lbl" style="margin-top:.75rem">📍 Location / Environment</p>', unsafe_allow_html=True)
+    st.markdown('<p style="color:rgba(148,112,255,.4);font-size:.72rem;margin-bottom:.4rem;line-height:1.45">Upload a photo of a place or environment — Claude describes it for use as the world setting.</p>', unsafe_allow_html=True)
+    location_img = st.file_uploader("Location reference", type=["jpg","jpeg","png","webp"],
+                                    label_visibility="collapsed", key="location_upload")
+    if location_img is not None:
+        location_desc = _vision_describe(
+            location_img,
+            "Describe this location or environment for use as a setting in an AI visual project. "
+            "Cover: type of place, key architectural or natural features, time of day if apparent, "
+            "atmosphere, scale, and any distinctive details. "
+            "Write 2-3 sentences, purely descriptive. Start with the location type (e.g. 'A rooftop terrace…', 'An abandoned warehouse…').",
+            "Describing location…",
+            "location_ref",
+            max_tokens=250,
+        )
+        st.session_state["location_desc"] = location_desc
+    location_text = st.text_area(
+        "location_desc_box",
+        value=st.session_state.get("location_desc", ""),
+        placeholder="Auto-filled after upload, or type manually…",
+        height=75,
+        label_visibility="collapsed",
+        key="location_desc_box",
+    )
+    st.session_state["location_desc"] = location_text
 
     st.divider()
     st.markdown('<p class="lbl">Video Tool</p>', unsafe_allow_html=True)
@@ -424,10 +509,15 @@ with st.sidebar:
         st.markdown('<p class="lbl">Saved Projects</p>', unsafe_allow_html=True)
     with new_col:
         if st.button("＋ New", key="new_project_btn", use_container_width=True):
-            for key in ["results", "audio_name", "project_name", "saved_lyrics",
-                        "char_description", "char_img_key", "just_loaded",
-                        "story_treatment", "story_project_name", "story_chat_history",
-                        "story_style_input"]:
+            clear_keys = [
+                "results", "audio_name", "project_name", "saved_lyrics", "just_loaded",
+                "story_treatment", "story_project_name", "story_chat_history", "story_style_input",
+                "style_ref_desc", "style_ref_hash", "style_ref_desc_hash",
+                "location_desc", "location_ref_hash", "location_ref_desc_hash",
+            ]
+            for ci in range(4):
+                clear_keys += [f"char_{ci}_desc", f"char_{ci}_hash", f"char_{ci}_desc_hash"]
+            for key in clear_keys:
                 st.session_state.pop(key, None)
             st.rerun()
 
@@ -692,6 +782,8 @@ if st.session_state["app_mode"] == "music_video":
         treatment = generate_shots(sections, audio_data, {
             "style": style, "mood": mood, "reference": reference,
             "video_tool": video_tool, "character": character,
+            "style_ref": st.session_state.get("style_ref_desc", ""),
+            "location": st.session_state.get("location_desc", ""),
         }, model=shot_model)
         render(4)
         timeline = build_timeline(sections, audio_data, treatment)
@@ -1043,6 +1135,8 @@ else:
                 "video_tool": video_tool,
                 "character": character,
                 "n_scenes": n_scenes,
+                "style_ref": st.session_state.get("style_ref_desc", ""),
+                "location": st.session_state.get("location_desc", ""),
             }
             with st.spinner("Claude is building your story arc and scenes…"):
                 try:
@@ -1062,6 +1156,8 @@ else:
             "project_type": project_type, "tone": tone,
             "reference": ss_reference, "video_tool": video_tool,
             "character": character, "n_scenes": n_scenes,
+            "style_ref": st.session_state.get("style_ref_desc", ""),
+            "location": st.session_state.get("location_desc", ""),
         })
 
         if st.session_state.get("story_project_name"):

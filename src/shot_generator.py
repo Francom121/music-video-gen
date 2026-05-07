@@ -81,6 +81,8 @@ def generate_shots(sections, audio_data, style_input, model="claude-sonnet-4-6")
         reference=style_input.get("reference", ""),
         video_tool=style_input.get("video_tool", "grok"),
         character=style_input.get("character", ""),
+        style_ref=style_input.get("style_ref", ""),
+        location=style_input.get("location", ""),
         section_summary=section_summary,
         section_names=section_names,
         n_shots_target=n_shots_target,
@@ -110,20 +112,22 @@ def generate_shots(sections, audio_data, style_input, model="claude-sonnet-4-6")
 
 
 def _build_prompt(*, duration, bpm, style, mood, reference, video_tool,
-                  character, section_summary, section_names, n_shots_target):
+                  character, style_ref, location, section_summary, section_names, n_shots_target):
 
-    char_block = ""
     if character:
         char_block = f"""
-PROTAGONIST / CHARACTER REFERENCE:
+CHARACTERS / PROTAGONISTS:
 {character}
-Use this character consistently throughout the video. Describe them specifically in each shot that features them so the AI video tool can maintain visual consistency (same appearance, clothing style, physicality).
+Describe each character specifically in every shot they appear in so AI tools render them consistently (appearance, clothing, physicality). If multiple characters appear together, describe both.
 """
     else:
         char_block = """
 PROTAGONIST:
 Create a single consistent protagonist for this video. Describe them specifically in every shot they appear in (appearance, clothing, physicality) so the AI video tool can maintain visual consistency across shots.
 """
+
+    style_ref_block = f"\nSTYLE REFERENCE: {style_ref}\nIncorporate this visual style into all shot prompts.\n" if style_ref else ""
+    location_block = f"\nPRIMARY LOCATION / ENVIRONMENT: {location}\nUse this as the main world/setting where appropriate. Include specific details from this location in shot prompts.\n" if location else ""
 
     sections_list = ", ".join(f'"{n}"' for n in section_names)
 
@@ -134,7 +138,7 @@ Create a single consistent protagonist for this video. Describe them specificall
 - Mood: {mood or '(infer from style and lyrics)'}
 - Sound-alike reference: {reference or '(none)'}
 - Target video tool: {video_tool}
-{char_block}
+{char_block}{style_ref_block}{location_block}
 SECTIONS WITH LOCKED TIMESTAMPS:
 {section_summary}
 
