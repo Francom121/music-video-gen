@@ -395,44 +395,57 @@ with st.sidebar:
     st.markdown('<p class="lbl">🎭 Characters</p>', unsafe_allow_html=True)
     st.markdown('<p style="color:rgba(148,112,255,.4);font-size:.72rem;margin-bottom:.5rem;line-height:1.45">Upload up to 4 character photos — Claude auto-describes each. Leave all blank and Claude invents them.</p>', unsafe_allow_html=True)
 
-    MAX_CHARS = 4
+    # Toggle to show/hide characters 2-4
+    if "show_extra_chars" not in st.session_state:
+        st.session_state["show_extra_chars"] = False
+
     char_labels = ["Protagonist", "Character 2", "Character 3", "Character 4"]
     char_descriptions = []
 
-    for ci in range(MAX_CHARS):
+    def _render_char_slot(ci):
         ck = f"char_{ci}"
-        with st.expander(f"{'👤 ' if ci == 0 else '👥 '}{char_labels[ci]}", expanded=(ci == 0)):
-            uploaded = st.file_uploader(
-                f"Upload {char_labels[ci]} photo",
-                type=["jpg","jpeg","png","webp"],
-                label_visibility="collapsed",
-                key=f"{ck}_upload",
+        st.markdown(f'<p class="lbl" style="margin-top:.6rem;margin-bottom:.3rem">{char_labels[ci]}</p>', unsafe_allow_html=True)
+        uploaded = st.file_uploader(
+            f"char_{ci}_file",
+            type=["jpg","jpeg","png","webp"],
+            label_visibility="collapsed",
+            key=f"{ck}_upload",
+        )
+        if uploaded is not None:
+            desc = _vision_describe(
+                uploaded,
+                "Describe this person for use as a consistent character in an AI visual project. "
+                "Cover: approximate age, build/physique, hair (color, length, style), skin tone, "
+                "facial features, clothing visible in the photo, and overall vibe/presence. "
+                "Write 2-3 sentences, purely descriptive, no names. Start with 'A [age] [gender]…'",
+                f"Describing {char_labels[ci]}…",
+                ck,
             )
-            if uploaded is not None:
-                desc = _vision_describe(
-                    uploaded,
-                    "Describe this person for use as a consistent character in an AI visual project. "
-                    "Cover: approximate age, build/physique, hair (color, length, style), skin tone, "
-                    "facial features, clothing visible in the photo, and overall vibe/presence. "
-                    "Write 2-3 sentences, purely descriptive, no names. Start with 'A [age] [gender]…'",
-                    f"Describing {char_labels[ci]}…",
-                    ck,
-                )
-                if desc:
-                    st.session_state[f"{ck}_desc"] = desc
+            if desc:
+                st.session_state[f"{ck}_desc"] = desc
+        saved_desc = st.session_state.get(f"{ck}_desc", "")
+        desc_val = st.text_area(
+            f"{ck}_desc_area",
+            value=saved_desc,
+            placeholder="Auto-filled after upload, or type manually…",
+            height=75,
+            label_visibility="collapsed",
+            key=f"{ck}_desc_box",
+        )
+        st.session_state[f"{ck}_desc"] = desc_val
+        if desc_val.strip():
+            char_descriptions.append((char_labels[ci], desc_val.strip()))
 
-            saved_desc = st.session_state.get(f"{ck}_desc", "")
-            desc_val = st.text_area(
-                f"{char_labels[ci]} description",
-                value=saved_desc,
-                placeholder="Auto-filled after upload, or type manually…",
-                height=80,
-                label_visibility="collapsed",
-                key=f"{ck}_desc_box",
-            )
-            st.session_state[f"{ck}_desc"] = desc_val
-            if desc_val.strip():
-                char_descriptions.append((char_labels[ci], desc_val.strip()))
+    _render_char_slot(0)
+
+    toggle_label = "﹢ Add more characters" if not st.session_state["show_extra_chars"] else "﹣ Hide extra characters"
+    if st.button(toggle_label, key="toggle_extra_chars", use_container_width=True):
+        st.session_state["show_extra_chars"] = not st.session_state["show_extra_chars"]
+        st.rerun()
+
+    if st.session_state["show_extra_chars"]:
+        for ci in range(1, 4):
+            _render_char_slot(ci)
 
     # Build the combined character string fed into prompts
     if char_descriptions:
