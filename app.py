@@ -391,50 +391,90 @@ with st.sidebar:
     st.markdown("### 🎬 Music Video Gen")
     st.divider()
 
-    st.markdown('<p class="lbl">Anthropic API Key</p>', unsafe_allow_html=True)
-    api_key = st.text_input(
-        "api_key",
-        value=os.environ.get("ANTHROPIC_API_KEY", ""),
-        type="password",
+    # ── Provider + API key ─────────────────────────────────────────────────
+    st.markdown('<p class="lbl">AI Provider</p>', unsafe_allow_html=True)
+    provider = st.selectbox(
+        "provider_sel",
+        ["anthropic", "openrouter"],
+        format_func=lambda x: "🟣 Anthropic (Claude)" if x == "anthropic" else "🔀 OpenRouter",
         label_visibility="collapsed",
-        placeholder="sk-ant-api03-...",
+        key="provider_select",
     )
-    if api_key and api_key != os.environ.get("ANTHROPIC_API_KEY", ""):
-        _save_api_key(api_key)
-    elif api_key:
-        os.environ["ANTHROPIC_API_KEY"] = api_key
+
+    if provider == "anthropic":
+        st.markdown('<p class="lbl">Anthropic API Key</p>', unsafe_allow_html=True)
+        api_key = st.text_input(
+            "api_key_ant",
+            value=os.environ.get("ANTHROPIC_API_KEY", ""),
+            type="password",
+            label_visibility="collapsed",
+            placeholder="sk-ant-api03-...",
+        )
+        if api_key and api_key != os.environ.get("ANTHROPIC_API_KEY", ""):
+            _save_api_key(api_key)
+        elif api_key:
+            os.environ["ANTHROPIC_API_KEY"] = api_key
+    else:
+        st.markdown('<p class="lbl">OpenRouter API Key</p>', unsafe_allow_html=True)
+        or_key_saved = os.environ.get("OPENROUTER_API_KEY", "")
+        api_key = st.text_input(
+            "api_key_or",
+            value=or_key_saved,
+            type="password",
+            label_visibility="collapsed",
+            placeholder="sk-or-...",
+        )
+        if api_key and api_key != or_key_saved:
+            # persist to .env
+            lines = []
+            if ENV_PATH.exists():
+                for line in ENV_PATH.read_text().splitlines():
+                    if not line.startswith("OPENROUTER_API_KEY="):
+                        lines.append(line)
+            lines.append(f"OPENROUTER_API_KEY={api_key}")
+            ENV_PATH.write_text("\n".join(lines) + "\n")
+            os.environ["OPENROUTER_API_KEY"] = api_key
+        elif api_key:
+            os.environ["OPENROUTER_API_KEY"] = api_key
 
     st.divider()
 
     # ── shared settings ────────────────────────────────────────────────────
-    import base64, anthropic as _ant
+    from src import llm_client as _llmc
+    from src.llm_client import OPENROUTER_FREE_VISION_MODELS
 
     def _vision_describe(img_file, prompt_text, spinner_label, cache_key, max_tokens=300):
-        """Run Claude Vision on an uploaded file; cache result by content hash."""
+        """Describe an image via the active provider; cache result by content hash."""
+        if not api_key:
+            st.warning("Enter your API key in the sidebar before uploading images.")
+            return ""
         img_bytes = img_file.read()
+        if not img_bytes:
+            st.warning("Image file appears empty — try re-uploading.")
+            return ""
         img_hash = hash(img_bytes)
         if st.session_state.get(cache_key + "_hash") == img_hash:
             return st.session_state.get(cache_key + "_desc", "")
         with st.spinner(spinner_label):
+            ext = img_file.name.rsplit(".", 1)[-1].lower()
+            vision_model = (
+                "claude-haiku-4-5-20251001" if provider == "anthropic"
+                else OPENROUTER_FREE_VISION_MODELS[0]
+            )
             try:
-                ext = img_file.name.rsplit(".", 1)[-1].lower()
-                media_type = {"jpg":"image/jpeg","jpeg":"image/jpeg",
-                              "png":"image/png","webp":"image/webp"}.get(ext,"image/jpeg")
-                b64 = base64.standard_b64encode(img_bytes).decode()
-                resp = _ant.Anthropic().messages.create(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=max_tokens,
-                    messages=[{"role":"user","content":[
-                        {"type":"image","source":{"type":"base64","media_type":media_type,"data":b64}},
-                        {"type":"text","text":prompt_text},
-                    ]}],
+                desc = _llmc.vision_describe(
+                    provider, api_key, vision_model,
+                    img_bytes, ext, prompt_text, max_tokens,
                 )
-                desc = resp.content[0].text.strip()
-                st.session_state[cache_key + "_hash"] = img_hash
-                st.session_state[cache_key + "_desc"] = desc
-                return desc
+                if desc:
+                    st.session_state[cache_key + "_hash"] = img_hash
+                    st.session_state[cache_key + "_desc"] = desc
+                    return desc
+                else:
+                    st.warning("Model returned empty description. Try re-uploading.")
+                    return ""
             except Exception as e:
-                st.warning(f"Could not describe image: {e}")
+                st.error(f"Could not describe image: {e}")
                 return ""
 
     # ── Characters (up to 4) ───────────────────────────────────────────────
@@ -458,7 +498,14 @@ with st.sidebar:
             key=f"{ck}_upload",
         )
         if uploaded is not None:
-            desc = _vision_describe(
+            img_col, name_col = st.columns([1, 3])
+            with img_col:
+                uploaded.seek(0)
+                st.image(uploaded, use_container_width=True)
+            with name_col:
+                st.markdown(f'<p style="color:rgba(185,165,255,.7);font-size:.72rem;word-break:break-all;margin:0;padding-top:.25rem">{uploaded.name}</p>', unsafe_allow_html=True)
+            uploaded.seek(0)
+            _vision_describe(
                 uploaded,
                 "Describe this person for use as a consistent character in an AI visual project. "
                 "Cover: approximate age, build/physique, hair (color, length, style), skin tone, "
@@ -467,12 +514,12 @@ with st.sidebar:
                 f"Describing {char_labels[ci]}…",
                 ck,
             )
-            if desc:
-                st.session_state[f"{ck}_desc"] = desc
         saved_desc = st.session_state.get(f"{ck}_desc", "")
+        # Keep widget state in sync with the underlying description value
+        if saved_desc and st.session_state.get(f"{ck}_desc_box", "") != saved_desc:
+            st.session_state[f"{ck}_desc_box"] = saved_desc
         desc_val = st.text_area(
             f"{ck}_desc_area",
-            value=saved_desc,
             placeholder="Auto-filled after upload, or type manually…",
             height=75,
             label_visibility="collapsed",
@@ -506,7 +553,14 @@ with st.sidebar:
     style_ref_img = st.file_uploader(" ", type=["jpg","jpeg","png","webp"],
                                      label_visibility="collapsed", key="style_ref_upload")
     if style_ref_img is not None:
-        style_ref_desc = _vision_describe(
+        img_col, name_col = st.columns([1, 3])
+        with img_col:
+            style_ref_img.seek(0)
+            st.image(style_ref_img, use_container_width=True)
+        with name_col:
+            st.markdown(f'<p style="color:rgba(185,165,255,.7);font-size:.72rem;word-break:break-all;margin:0;padding-top:.25rem">{style_ref_img.name}</p>', unsafe_allow_html=True)
+        style_ref_img.seek(0)
+        _vision_describe(
             style_ref_img,
             "Describe the visual style of this image for use as a style reference in an AI video/image generation project. "
             "Cover: color palette, lighting mood, texture/grain, art direction, era/period feel, and overall aesthetic. "
@@ -516,10 +570,11 @@ with st.sidebar:
             "style_ref",
             max_tokens=250,
         )
-        st.session_state["style_ref_desc"] = style_ref_desc
+    _srd = st.session_state.get("style_ref_desc", "")
+    if _srd and st.session_state.get("style_ref_desc_box", "") != _srd:
+        st.session_state["style_ref_desc_box"] = _srd
     style_ref_text = st.text_area(
         "style_ref_desc_box",
-        value=st.session_state.get("style_ref_desc", ""),
         placeholder="Auto-filled after upload, or type manually…",
         height=75,
         label_visibility="collapsed",
@@ -533,7 +588,14 @@ with st.sidebar:
     location_img = st.file_uploader(" ", type=["jpg","jpeg","png","webp"],
                                     label_visibility="collapsed", key="location_upload")
     if location_img is not None:
-        location_desc = _vision_describe(
+        img_col, name_col = st.columns([1, 3])
+        with img_col:
+            location_img.seek(0)
+            st.image(location_img, use_container_width=True)
+        with name_col:
+            st.markdown(f'<p style="color:rgba(185,165,255,.7);font-size:.72rem;word-break:break-all;margin:0;padding-top:.25rem">{location_img.name}</p>', unsafe_allow_html=True)
+        location_img.seek(0)
+        _vision_describe(
             location_img,
             "Describe this location or environment for use as a setting in an AI visual project. "
             "Cover: type of place, key architectural or natural features, time of day if apparent, "
@@ -543,10 +605,11 @@ with st.sidebar:
             "location_ref",
             max_tokens=250,
         )
-        st.session_state["location_desc"] = location_desc
+    _ld = st.session_state.get("location_desc", "")
+    if _ld and st.session_state.get("location_desc_box", "") != _ld:
+        st.session_state["location_desc_box"] = _ld
     location_text = st.text_area(
         "location_desc_box",
-        value=st.session_state.get("location_desc", ""),
         placeholder="Auto-filled after upload, or type manually…",
         height=75,
         label_visibility="collapsed",
@@ -557,9 +620,14 @@ with st.sidebar:
     st.divider()
     st.markdown('<p class="lbl">Video Tool</p>', unsafe_allow_html=True)
     video_tool = st.selectbox("vtool", ["grok", "runway", "seedance"], label_visibility="collapsed")
-    st.markdown('<p class="lbl">Claude Model</p>', unsafe_allow_html=True)
-    shot_model = st.selectbox("model", ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"],
-                              label_visibility="collapsed")
+
+    st.markdown('<p class="lbl">Model</p>', unsafe_allow_html=True)
+    from src.llm_client import ANTHROPIC_MODELS, OPENROUTER_FREE_TEXT_MODELS
+    if provider == "anthropic":
+        model_opts = ANTHROPIC_MODELS
+    else:
+        model_opts = OPENROUTER_FREE_TEXT_MODELS
+    shot_model = st.selectbox("model", model_opts, label_visibility="collapsed")
 
     # ── saved projects ──────────────────────────────────────────────────────
     st.divider()
@@ -571,6 +639,7 @@ with st.sidebar:
             clear_keys = [
                 "results", "audio_name", "project_name", "saved_lyrics", "just_loaded",
                 "story_treatment", "story_project_name", "story_chat_history", "story_style_input",
+                "story_script", "story_script_type",
                 "style_ref_desc", "style_ref_hash", "style_ref_desc_hash",
                 "location_desc", "location_ref_hash", "location_ref_desc_hash",
             ]
@@ -603,6 +672,17 @@ with st.sidebar:
                              type="primary" if active else "secondary"):
                     try:
                         d = load_project(p["file"])
+                        def _restore_ref_descriptions(d):
+                            refs = d.get("ref_descriptions", {})
+                            for ci in range(4):
+                                v = refs.get("chars", {}).get(f"char_{ci}", "")
+                                if v:
+                                    st.session_state[f"char_{ci}_desc"] = v
+                            if refs.get("style_ref"):
+                                st.session_state["style_ref_desc"] = refs["style_ref"]
+                            if refs.get("location"):
+                                st.session_state["location_desc"] = refs["location"]
+
                         if d.get("mode", "music_video") == "music_video":
                             audio_data_full = {
                                 "duration": d["audio_analysis"]["duration"],
@@ -619,13 +699,17 @@ with st.sidebar:
                             st.session_state["project_name"] = d["name"]
                             st.session_state["just_loaded"] = d["name"]
                             st.session_state["app_mode"] = "music_video"
+                            _restore_ref_descriptions(d)
                         else:
                             st.session_state["story_treatment"] = d.get("treatment", {})
                             st.session_state["story_project_name"] = d["name"]
                             st.session_state["story_chat_history"] = d.get("chat_history", [])
                             st.session_state["story_style_input"] = d.get("style_input", {})
+                            st.session_state["story_script"] = d.get("script")
+                            st.session_state["story_script_type"] = d.get("style_input", {}).get("script_type", "Voiceover + Dialogue")
                             st.session_state["just_loaded"] = d["name"]
                             st.session_state["app_mode"] = "story_studio"
+                            _restore_ref_descriptions(d)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Failed to load: {e}")
@@ -787,6 +871,11 @@ if st.session_state["app_mode"] == "music_video":
                     "bar_length": ad["bar_length"], "boundaries": ad["boundaries"],
                 },
                 "sections": sec,
+                "ref_descriptions": {
+                    "chars": {f"char_{ci}": st.session_state.get(f"char_{ci}_desc", "") for ci in range(4)},
+                    "style_ref": st.session_state.get("style_ref_desc", ""),
+                    "location": st.session_state.get("location_desc", ""),
+                },
             })
             st.session_state["project_name"] = proj_name
             del st.session_state["show_save_dialog"]
@@ -843,6 +932,8 @@ if st.session_state["app_mode"] == "music_video":
             "video_tool": video_tool, "character": character,
             "style_ref": st.session_state.get("style_ref_desc", ""),
             "location": st.session_state.get("location_desc", ""),
+            "provider": provider,
+            "api_key": api_key,
         }, model=shot_model)
         render(4)
         timeline = build_timeline(sections, audio_data, treatment)
@@ -978,7 +1069,8 @@ if st.session_state["app_mode"] == "music_video":
                         try:
                             from src.shot_generator import reroll_shot
                             new_shot = reroll_shot(shot, treatment, {"style": style, "mood": mood,
-                                                                      "reference": reference, "character": character}, model=shot_model)
+                                                                      "reference": reference, "character": character,
+                                                                      "provider": provider, "api_key": api_key}, model=shot_model)
                             ad, sec, tr, tl = st.session_state["results"]
                             tr["shots"][idx] = new_shot
                             st.session_state["results"] = (ad, sec, tr, tl)
@@ -1137,7 +1229,9 @@ if st.session_state["app_mode"] == "music_video":
 # STORY STUDIO MODE
 # ══════════════════════════════════════════════════════════════════════════════
 else:
-    from src.story_generator import PROJECT_TYPES, generate_scenes, iterate_scenes, reroll_scene
+    from src.story_generator import (PROJECT_TYPES, SCRIPT_TYPES, generate_scenes,
+                                      iterate_scenes, reroll_scene, generate_script,
+                                      reroll_script_line)
 
     st.markdown("# ✨ Story Studio")
     st.markdown('<p class="hero-sub">Write any story — anime, short film, ad, rap battle — and iterate scene by scene with Claude.</p>', unsafe_allow_html=True)
@@ -1151,8 +1245,41 @@ else:
         tone = st.text_input("tone_ss", placeholder="e.g. dark, comedic, heartwarming", label_visibility="collapsed")
         st.markdown('<p class="lbl">Reference / Inspiration</p>', unsafe_allow_html=True)
         ss_reference = st.text_input("ref_ss", placeholder="e.g. Studio Ghibli, Breaking Bad", label_visibility="collapsed")
-        st.markdown('<p class="lbl">Number of Scenes</p>', unsafe_allow_html=True)
-        n_scenes = st.slider("n_scenes", min_value=4, max_value=24, value=12, label_visibility="collapsed")
+
+        st.divider()
+        st.markdown('<p class="lbl">🎬 Video Duration</p>', unsafe_allow_html=True)
+
+        # Clip length depends on video tool
+        if video_tool == "seedance":
+            clip_opts = [5, 10, 15]
+            clip_default = 10
+        else:  # grok, runway, etc.
+            clip_opts = [6, 10]
+            clip_default = 10
+        st.markdown('<p style="color:rgba(148,112,255,.4);font-size:.72rem;margin-bottom:.3rem">Clip length per scene</p>', unsafe_allow_html=True)
+        clip_duration = st.selectbox(
+            "clip_dur",
+            clip_opts,
+            index=clip_opts.index(clip_default),
+            format_func=lambda x: f"{x}s per clip",
+            label_visibility="collapsed",
+        )
+
+        st.markdown('<p style="color:rgba(148,112,255,.4);font-size:.72rem;margin-top:.5rem;margin-bottom:.3rem">Total video length</p>', unsafe_allow_html=True)
+        dur_col1, dur_col2 = st.columns(2)
+        with dur_col1:
+            total_min = st.number_input("tot_min", min_value=0, max_value=59, value=1,
+                                        label_visibility="collapsed", step=1)
+        with dur_col2:
+            total_sec_inp = st.number_input("tot_sec", min_value=0, max_value=59, value=30,
+                                            label_visibility="collapsed", step=5)
+        total_duration_sec = total_min * 60 + total_sec_inp
+        n_scenes = max(1, round(total_duration_sec / clip_duration))
+        st.markdown(
+            f'<p style="color:rgba(167,139,250,.55);font-size:.75rem;margin-top:.3rem">'
+            f'→ {n_scenes} scenes × {clip_duration}s = {total_duration_sec}s total</p>',
+            unsafe_allow_html=True,
+        )
 
     treatment = st.session_state.get("story_treatment")
 
@@ -1194,8 +1321,11 @@ else:
                 "video_tool": video_tool,
                 "character": character,
                 "n_scenes": n_scenes,
+                "clip_duration": clip_duration,
                 "style_ref": st.session_state.get("style_ref_desc", ""),
                 "location": st.session_state.get("location_desc", ""),
+                "provider": provider,
+                "api_key": api_key,
             }
             with st.spinner("Claude is building your story arc and scenes…"):
                 try:
@@ -1215,9 +1345,15 @@ else:
             "project_type": project_type, "tone": tone,
             "reference": ss_reference, "video_tool": video_tool,
             "character": character, "n_scenes": n_scenes,
+            "clip_duration": clip_duration,
             "style_ref": st.session_state.get("style_ref_desc", ""),
             "location": st.session_state.get("location_desc", ""),
+            "provider": provider,
+            "api_key": api_key,
         })
+        # Always keep provider/api_key fresh (user may switch mid-session)
+        style_input["provider"] = provider
+        style_input["api_key"] = api_key
 
         if st.session_state.get("story_project_name"):
             st.markdown(
@@ -1265,8 +1401,14 @@ else:
             if ss_submitted and ss_proj_name:
                 fpath = save_project(ss_proj_name, "story_studio", {
                     "treatment": treatment,
+                    "script": st.session_state.get("story_script"),
                     "chat_history": st.session_state.get("story_chat_history", []),
                     "style_input": style_input,
+                    "ref_descriptions": {
+                        "chars": {f"char_{ci}": st.session_state.get(f"char_{ci}_desc", "") for ci in range(4)},
+                        "style_ref": st.session_state.get("style_ref_desc", ""),
+                        "location": st.session_state.get("location_desc", ""),
+                    },
                 })
                 st.session_state["story_project_name"] = ss_proj_name
                 del st.session_state["show_story_save_dialog"]
@@ -1278,8 +1420,8 @@ else:
 
         st.markdown("<div style='height:.5rem'></div>", unsafe_allow_html=True)
 
-        tab_treatment, tab_scenes, tab_video, tab_images, tab_export = st.tabs([
-            "🎨  Treatment", "🎬  Scenes", "🎥  Video Prompts", "🖼  Image Prompts", "💾  Export"
+        tab_treatment, tab_scenes, tab_script, tab_video, tab_images, tab_export = st.tabs([
+            "🎨  Treatment", "🎬  Scenes", "📝  Script", "🎥  Video Prompts", "🖼  Image Prompts", "💾  Export"
         ])
 
         # ── Treatment tab ─────────────────────────────────────────────────────
@@ -1406,6 +1548,133 @@ else:
                     except Exception as e:
                         st.error(f"Iteration failed: {e}")
 
+        # ── Script tab ────────────────────────────────────────────────────────
+        with tab_script:
+            script = st.session_state.get("story_script")
+            cd = style_input.get("clip_duration", 10)
+
+            # Header controls
+            sc_type_col, sc_gen_col = st.columns([2, 2], gap="medium")
+            with sc_type_col:
+                st.markdown('<p class="lbl">Script Type</p>', unsafe_allow_html=True)
+                script_type_sel = st.selectbox(
+                    "script_type",
+                    SCRIPT_TYPES,
+                    index=0,
+                    label_visibility="collapsed",
+                    key="script_type_select",
+                )
+            with sc_gen_col:
+                st.markdown('<p class="lbl" style="opacity:0">.</p>', unsafe_allow_html=True)
+                if st.button("✦  Generate Script", type="primary", use_container_width=True, key="gen_script_btn"):
+                    with st.spinner("Claude is writing your script…"):
+                        try:
+                            result_script = generate_script(
+                                treatment, style_input,
+                                script_type=script_type_sel,
+                                model=shot_model,
+                            )
+                            st.session_state["story_script"] = result_script
+                            st.session_state["story_script_type"] = script_type_sel
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Script generation failed: {e}")
+
+            if not script:
+                st.markdown(
+                    '<p style="color:rgba(148,112,255,.4);font-size:.85rem;margin-top:1rem">'
+                    'Choose a script type above and click Generate Script. Claude will write '
+                    'timestamped voiceover and/or dialogue for every scene.</p>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                scenes_by_id = {s["id"]: s for s in treatment.get("scenes", [])}
+                lines = script.get("lines", [])
+                total_s = script.get("total_duration_sec", 0)
+                sc_type = st.session_state.get("story_script_type", script_type_sel)
+
+                st.markdown(
+                    f'<p style="color:rgba(148,112,255,.55);font-size:.82rem;margin-bottom:.75rem">'
+                    f'{len(lines)} scenes · {total_s}s total · {sc_type}</p>',
+                    unsafe_allow_html=True,
+                )
+
+                want_vo = sc_type in ("Voiceover + Dialogue", "Voiceover only")
+                want_dlg = sc_type in ("Voiceover + Dialogue", "Dialogue only")
+
+                for li, line in enumerate(lines):
+                    sid = line.get("scene_id", "?")
+                    scene_ctx = scenes_by_id.get(sid, {})
+                    ts = f'{line.get("timestamp_start","?")} – {line.get("timestamp_end","?")}'
+
+                    st.markdown(
+                        f'<div class="scene-card">'
+                        f'<div class="scene-hdr">'
+                        f'<span class="scene-id">Scene {sid}</span>'
+                        f'<span class="scene-act">{scene_ctx.get("act","")}</span>'
+                        f'<span style="margin-left:auto;font-family:monospace;font-size:.75rem;color:rgba(148,112,255,.5)">{ts}</span>'
+                        f'</div>'
+                        f'<div class="scene-beat">📖 {scene_ctx.get("story_beat","")}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    if want_vo:
+                        vo_val = st.text_area(
+                            f"vo_{li}",
+                            value=line.get("voiceover") or "",
+                            placeholder="(no voiceover for this scene)",
+                            height=70,
+                            label_visibility="collapsed",
+                            key=f"vo_edit_{li}",
+                        )
+                        # write edits back into session state immediately
+                        lines[li]["voiceover"] = vo_val if vo_val.strip() else None
+
+                    if want_dlg:
+                        dlg = line.get("dialogue", [])
+                        if dlg:
+                            for di, d_line in enumerate(dlg):
+                                dcol1, dcol2 = st.columns([1, 3], gap="small")
+                                with dcol1:
+                                    char_edit = st.text_input(
+                                        f"char_{li}_{di}",
+                                        value=d_line.get("character", ""),
+                                        label_visibility="collapsed",
+                                        key=f"dlg_char_{li}_{di}",
+                                        placeholder="Character",
+                                    )
+                                with dcol2:
+                                    line_edit = st.text_input(
+                                        f"line_{li}_{di}",
+                                        value=d_line.get("line", ""),
+                                        label_visibility="collapsed",
+                                        key=f"dlg_line_{li}_{di}",
+                                        placeholder="Dialogue line…",
+                                    )
+                                lines[li]["dialogue"][di] = {"character": char_edit, "line": line_edit}
+                        else:
+                            st.markdown(
+                                '<p style="color:rgba(148,112,255,.3);font-size:.78rem;font-style:italic">No dialogue for this scene.</p>',
+                                unsafe_allow_html=True,
+                            )
+
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                    if st.button(f"🎲 Reroll Scene {sid} Script", key=f"reroll_script_{li}_{sid}"):
+                        with st.spinner(f"Rewriting scene {sid} script…"):
+                            try:
+                                new_line = reroll_script_line(
+                                    sid, scene_ctx, line, sc_type, style_input, model=shot_model
+                                )
+                                st.session_state["story_script"]["lines"][li] = new_line
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Reroll failed: {e}")
+
+                # Persist edits back
+                if script:
+                    st.session_state["story_script"]["lines"] = lines
+
         # ── Video Prompts tab ─────────────────────────────────────────────────
         with tab_video:
             scenes = treatment.get("scenes", [])
@@ -1498,23 +1767,48 @@ else:
             def ss_build_image_prompts_txt():
                 return "\n\n".join(s["image_prompt"] for s in scenes if s.get("image_prompt")) + "\n"
 
+            def ss_build_script_txt():
+                sc = st.session_state.get("story_script")
+                if not sc:
+                    return "(No script generated yet — go to the Script tab and click Generate Script)"
+                sc_type = st.session_state.get("story_script_type", "Script")
+                scenes_by_id = {s["id"]: s for s in scenes}
+                lines_out = [
+                    f"# {treatment.get('project_type','Story')} — {sc_type}",
+                    f"Total duration: {sc.get('total_duration_sec',0)}s",
+                    "",
+                ]
+                for line in sc.get("lines", []):
+                    sid = line.get("scene_id","?")
+                    sc_ctx = scenes_by_id.get(sid, {})
+                    lines_out.append(f"[{line.get('timestamp_start','?')} – {line.get('timestamp_end','?')}]  SCENE {sid}  {sc_ctx.get('description','')}")
+                    vo = line.get("voiceover")
+                    if vo:
+                        lines_out.append(f"  VO: {vo}")
+                    for d in line.get("dialogue", []):
+                        lines_out.append(f"  {d.get('character','?').upper()}: {d.get('line','')}")
+                    lines_out.append("")
+                return "\n".join(lines_out)
+
             ss_project_json = json.dumps({
                 "name": st.session_state.get("story_project_name",""),
                 "mode": "story_studio",
                 "treatment": treatment,
+                "script": st.session_state.get("story_script"),
                 "style_input": style_input,
                 "chat_history": st.session_state.get("story_chat_history", []),
             }, indent=2)
 
             st.markdown('<p class="lbl">Download Files</p>', unsafe_allow_html=True)
 
-            e1, e2, e3, e4, e5 = st.columns(5, gap="small")
+            e1, e2, e3, e4, e5, e6 = st.columns(6, gap="small")
             for col, ico, title, sub, data, fname, mime in [
                 (e1,"📋","treatment.md","Story arc & direction",ss_build_treatment_md(),f"{proj_slug}-treatment.md","text/markdown"),
                 (e2,"🎞","prompts.md","All scene prompts",ss_build_prompts_md(),f"{proj_slug}-prompts.md","text/markdown"),
-                (e3,"🎬","video-prompts.txt","Paste-ready video prompts",ss_build_video_prompts_txt(),f"{proj_slug}-video-prompts.txt","text/plain"),
-                (e4,"🖼","image-prompts.txt","Paste-ready image prompts",ss_build_image_prompts_txt(),f"{proj_slug}-image-prompts.txt","text/plain"),
-                (e5,"🗂","project.json","Full raw data",ss_project_json,f"{proj_slug}-project.json","application/json"),
+                (e3,"📝","script.txt","Timestamped script",ss_build_script_txt(),f"{proj_slug}-script.txt","text/plain"),
+                (e4,"🎬","video-prompts.txt","Paste-ready video prompts",ss_build_video_prompts_txt(),f"{proj_slug}-video-prompts.txt","text/plain"),
+                (e5,"🖼","image-prompts.txt","Paste-ready image prompts",ss_build_image_prompts_txt(),f"{proj_slug}-image-prompts.txt","text/plain"),
+                (e6,"🗂","project.json","Full raw data",ss_project_json,f"{proj_slug}-project.json","application/json"),
             ]:
                 with col:
                     st.markdown(f'<div class="dlcard"><div class="dlico">{ico}</div><div class="dltitle">{title}</div><div class="dlsub">{sub}</div></div>', unsafe_allow_html=True)

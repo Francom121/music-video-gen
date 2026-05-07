@@ -1,11 +1,12 @@
 """Generate scene-by-scene visual treatments for any story-based project.
 
 Supports: anime, kids cartoon, short film, rap battle, ad, documentary, etc.
-Also handles chat-based iteration — Claude patches specific scenes in response
+Also handles chat-based iteration — the LLM patches specific scenes in response
 to natural language instructions without regenerating the full treatment.
+Supports Anthropic and OpenRouter providers.
 """
 import json
-import anthropic
+from src import llm_client as _llm
 
 PROJECT_TYPES = [
     "Anime / Manga Series",
@@ -22,10 +23,13 @@ PROJECT_TYPES = [
     "Other / Custom",
 ]
 
+SCRIPT_TYPES = ["Voiceover + Dialogue", "Voiceover only", "Dialogue only"]
+
 
 def generate_scenes(brief, style_input, model="claude-sonnet-4-6"):
     """Generate a full scene breakdown with video + image prompts from a story brief."""
-    client = anthropic.Anthropic()
+    provider = style_input.get("provider", "anthropic")
+    api_key = style_input.get("api_key", "")
 
     n_scenes = style_input.get("n_scenes", 12)
     project_type = style_input.get("project_type", "Short Film")
@@ -35,6 +39,7 @@ def generate_scenes(brief, style_input, model="claude-sonnet-4-6"):
     video_tool = style_input.get("video_tool", "grok")
     style_ref = style_input.get("style_ref", "")
     location = style_input.get("location", "")
+    clip_duration = style_input.get("clip_duration", 10)
 
     prompt = _build_scene_prompt(
         brief=brief,
@@ -46,36 +51,134 @@ def generate_scenes(brief, style_input, model="claude-sonnet-4-6"):
         n_scenes=n_scenes,
         style_ref=style_ref,
         location=location,
+        clip_duration=clip_duration,
     )
 
-    message = client.messages.create(
-        model=model,
-        max_tokens=16000,
-        system=[{
-            "type": "text",
-            "text": (
-                "You are an award-winning creative director and visual storyteller. "
-                "You specialize in turning story concepts into vivid, production-ready "
-                "scene breakdowns with AI-generation prompts. "
-                "You output strict JSON only — no markdown fences, no preamble."
-            ),
-            "cache_control": {"type": "ephemeral"},
-        }],
-        messages=[{"role": "user", "content": prompt}],
+    system = (
+        "You are an award-winning creative director and visual storyteller. "
+        "You specialize in turning story concepts into vivid, production-ready "
+        "scene breakdowns with AI-generation prompts. "
+        "You output strict JSON only — no markdown fences, no preamble."
+    )
+    text = _llm.chat(provider, api_key, model, system, prompt,
+                     max_tokens=16000, cache_system=(provider == "anthropic"))
+    return _parse_json(text)
+
+
+def generate_script(treatment, style_input, script_type="Voiceover + Dialogue",
+                    model="claude-sonnet-4-6"):
+    """Generate a full timestamped script (voiceover and/or dialogue) from a treatment."""
+    provider = style_input.get("provider", "anthropic")
+    api_key = style_input.get("api_key", "")
+
+    scenes = treatment.get("scenes", [])
+    clip_duration = style_input.get("clip_duration", 10)
+    characters = style_input.get("character", "")
+    project_type = style_input.get("project_type", "Short Film")
+
+    # Build timestamped scene list for Claude
+    scene_list = []
+    t = 0
+    for s in scenes:
+        dur = s.get("duration_sec", clip_duration)
+        scene_list.append(
+            f'Scene {s["id"]} [{_fmt_ts(t)}–{_fmt_ts(t+dur)}] | {s.get("act","")} | '
+            f'{s.get("story_beat","")} | {s.get("description","")}'
+        )
+        t += dur
+
+    scene_block = "\n".join(scene_list)
+
+    want_vo = script_type in ("Voiceover + Dialogue", "Voiceover only")
+    want_dlg = script_type in ("Voiceover + Dialogue", "Dialogue only")
+
+    vo_instruction = (
+        '  "voiceover": "narrator line spoken over this scene, or null if silent",'
+        if want_vo else ""
+    )
+    dlg_instruction = (
+        '  "dialogue": [{"character": "Name", "line": "spoken line"}, ...]  // empty array if no dialogue'
+        if want_dlg else ""
     )
 
-    text = "".join(b.text for b in message.content if hasattr(b, "text")).strip()
+    char_block = f"\nCHARACTERS:\n{characters}\n" if characters else ""
+
+    prompt = f"""You are a professional screenwriter. Write a complete, production-ready script for this {project_type}.
+
+CONCEPT: {treatment.get("concept", "")}
+{char_block}
+SCENES WITH TIMESTAMPS:
+{scene_block}
+
+SCRIPT TYPE: {script_type}
+{"- Write a VOICEOVER narration line for each scene (narrator voice-over, not character speech)" if want_vo else ""}
+{"- Write DIALOGUE for scenes where characters would naturally speak to each other" if want_dlg else ""}
+
+RULES:
+- Every scene must have an entry in the script array, even if voiceover is null and dialogue is empty
+- Voiceover should feel cinematic — poetic, punchy, or dramatic depending on tone
+- Dialogue must feel natural for the characters and fit within the scene's duration
+- Keep voiceover lines short enough to be spoken in the scene's duration
+- Scene IDs must match exactly: {", ".join(s["id"] for s in scenes)}
+
+Return ONLY a JSON object (no fences):
+{{
+  "script_type": "{script_type}",
+  "total_duration_sec": {sum(s.get("duration_sec", clip_duration) for s in scenes)},
+  "lines": [
+    {{
+      "scene_id": "01",
+      "timestamp_start": "0:00",
+      "timestamp_end": "0:10",
+      {vo_instruction}
+      {dlg_instruction}
+    }}
+  ]
+}}"""
+
+    text = _llm.chat(provider, api_key, model, "", prompt, max_tokens=8000)
+    return _parse_json(text)
+
+
+def reroll_script_line(scene_id, scene_context, current_line, script_type,
+                       style_input, model="claude-sonnet-4-6"):
+    """Rewrite a single script line (voiceover and/or dialogue) for one scene."""
+    provider = style_input.get("provider", "anthropic")
+    api_key = style_input.get("api_key", "")
+
+    want_vo = script_type in ("Voiceover + Dialogue", "Voiceover only")
+    want_dlg = script_type in ("Voiceover + Dialogue", "Dialogue only")
+
+    vo_field = '"voiceover": "rewritten narrator line, or null",' if want_vo else ""
+    dlg_field = '"dialogue": [{"character": "Name", "line": "line"}, ...]' if want_dlg else ""
+
+    prompt = f"""You are a screenwriter. Rewrite ONE scene's script with a fresh take.
+
+SCENE: {scene_context.get("description", "")}
+STORY BEAT: {scene_context.get("story_beat", "")}
+TIMESTAMP: {current_line.get("timestamp_start","?")} – {current_line.get("timestamp_end","?")}
+CURRENT VOICEOVER: {current_line.get("voiceover", "(none)")}
+CURRENT DIALOGUE: {json.dumps(current_line.get("dialogue", []))}
+
+Write a completely different version. Keep it fitting the scene's emotional beat and duration.
+
+Return ONLY a JSON object (no fences):
+{{
+  "scene_id": "{scene_id}",
+  "timestamp_start": "{current_line.get("timestamp_start","?")}",
+  "timestamp_end": "{current_line.get("timestamp_end","?")}",
+  {vo_field}
+  {dlg_field}
+}}"""
+
+    text = _llm.chat(provider, api_key, model, "", prompt, max_tokens=500)
     return _parse_json(text)
 
 
 def iterate_scenes(current_treatment, instruction, style_input, model="claude-sonnet-4-6"):
-    """Apply a natural-language change instruction to the current treatment.
-
-    Claude returns the full updated treatment JSON with only the affected
-    scenes changed — everything else is preserved exactly.
-    """
-    client = anthropic.Anthropic()
-
+    """Apply a natural-language change instruction to the current treatment."""
+    provider = style_input.get("provider", "anthropic")
+    api_key = style_input.get("api_key", "")
     character = style_input.get("character", "")
     char_block = f"\nPROTAGONIST: {character}" if character else ""
 
@@ -100,22 +203,17 @@ RULES:
 
 Return ONLY the JSON object, no fences, no explanation."""
 
-    message = client.messages.create(
-        model=model,
-        max_tokens=16000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    text = "".join(b.text for b in message.content if hasattr(b, "text")).strip()
+    text = _llm.chat(provider, api_key, model, "", prompt, max_tokens=16000)
     return _parse_json(text)
 
 
 def reroll_scene(scene, treatment_context, style_input, model="claude-sonnet-4-6"):
     """Regenerate a single scene with fresh creative vision."""
-    client = anthropic.Anthropic()
-
+    provider = style_input.get("provider", "anthropic")
+    api_key = style_input.get("api_key", "")
     char = style_input.get("character", "")
     char_block = f"\nPROTAGONIST: {char}" if char else ""
+    clip_duration = style_input.get("clip_duration", 10)
 
     prompt = f"""You are a creative director. Regenerate ONE scene with a completely fresh take.
 
@@ -140,20 +238,21 @@ Return ONLY a JSON object (no fences):
   "description": "short 5-10 word description",
   "prompt": "full video prompt with camera work, lighting, style modifiers, under 80 words",
   "image_prompt": "single cinematic still-frame for DALL-E/Midjourney, under 60 words, no camera movement verbs",
-  "duration_sec": {scene.get("duration_sec", 8)}
+  "duration_sec": {scene.get("duration_sec", clip_duration)}
 }}"""
 
-    message = client.messages.create(
-        model=model,
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = "".join(b.text for b in message.content if hasattr(b, "text")).strip()
+    text = _llm.chat(provider, api_key, model, "", prompt, max_tokens=1000)
     return _parse_json(text)
 
 
+def _fmt_ts(total_sec):
+    m = int(total_sec // 60)
+    s = int(total_sec % 60)
+    return f"{m}:{s:02d}"
+
+
 def _build_scene_prompt(*, brief, project_type, tone, character, reference, video_tool, n_scenes,
-                        style_ref="", location=""):
+                        style_ref="", location="", clip_duration=10):
     if character:
         char_block = f"""
 CHARACTERS:
@@ -175,6 +274,7 @@ Type: {project_type}
 Tone: {tone or "(infer from brief)"}
 Reference / Inspiration: {reference or "(none)"}
 Target video tool: {video_tool}
+Clip duration: {clip_duration} seconds per scene
 {char_block}{style_ref_block}{location_block}
 STORY / IDEA:
 {brief}
@@ -201,6 +301,7 @@ Each scene must:
 - Match the tone and visual style of the project type
 - Include specific character descriptions when protagonist appears
 - Use 2-3 recurring visual motifs throughout for consistency
+- Set "duration_sec" to {clip_duration} for every scene
 
 Assign each scene to an act: "Act 1", "Act 2", "Act 3" (or "Cold Open", "Act 1"... for episodic)
 
@@ -239,7 +340,7 @@ OUTPUT FORMAT — strict JSON only, no fences:
       "description": "short 5-10 word scene description",
       "prompt": "full video prompt",
       "image_prompt": "still-frame prompt for DALL-E/Midjourney",
-      "duration_sec": 8
+      "duration_sec": {clip_duration}
     }}
   ]
 }}

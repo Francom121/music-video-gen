@@ -1,16 +1,17 @@
-"""Generate visual treatment + video/image prompts via Claude API.
+"""Generate visual treatment + video/image prompts.
 
-Prompts are narrative-first: Claude builds a complete visual story arc
+Prompts are narrative-first: the LLM builds a complete visual story arc
 (protagonist, emotional journey, section callbacks, payoff) before writing
-individual shot prompts.
+individual shot prompts. Supports Anthropic and OpenRouter providers.
 """
 import json
-import anthropic
+from src import llm_client as _llm
 
 
 def reroll_shot(shot, treatment_context, style_input, model="claude-sonnet-4-6"):
     """Regenerate one shot with fresh creative vision, preserving id/section/lyric_cue."""
-    client = anthropic.Anthropic()
+    provider = style_input.get("provider", "anthropic")
+    api_key = style_input.get("api_key", "")
 
     char = style_input.get("character", "")
     char_block = f"\nPROTAGONIST: {char}" if char else ""
@@ -48,18 +49,14 @@ Return ONLY a JSON object (no fences):
   "duration_target_sec": {shot.get("duration_target_sec", 7)}
 }}"""
 
-    message = client.messages.create(
-        model=model,
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = "".join(b.text for b in message.content if hasattr(b, "text")).strip()
+    text = _llm.chat(provider, api_key, model, "", prompt, max_tokens=1000)
     return _parse_json_response(text)
 
 
 def generate_shots(sections, audio_data, style_input, model="claude-sonnet-4-6"):
-    """Call Claude to produce a complete narrative visual treatment as structured JSON."""
-    client = anthropic.Anthropic()
+    """Produce a complete narrative visual treatment as structured JSON."""
+    provider = style_input.get("provider", "anthropic")
+    api_key = style_input.get("api_key", "")
 
     duration = audio_data["duration"]
     n_shots_target = max(15, min(40, int(duration / 8)))
@@ -88,26 +85,14 @@ def generate_shots(sections, audio_data, style_input, model="claude-sonnet-4-6")
         n_shots_target=n_shots_target,
     )
 
-    message = client.messages.create(
-        model=model,
-        max_tokens=16000,
-        system=[{
-            "type": "text",
-            "text": (
-                "You are an award-winning music video director and visual storyteller. "
-                "You think in narrative arcs — every video you create tells a complete emotional story "
-                "that mirrors the song's lyrical journey. You output strict JSON only: no markdown "
-                "fences, no preamble, no explanation before or after the JSON object."
-            ),
-            "cache_control": {"type": "ephemeral"},
-        }],
-        messages=[{"role": "user", "content": prompt}],
+    system = (
+        "You are an award-winning music video director and visual storyteller. "
+        "You think in narrative arcs — every video you create tells a complete emotional story "
+        "that mirrors the song's lyrical journey. You output strict JSON only: no markdown "
+        "fences, no preamble, no explanation before or after the JSON object."
     )
-
-    response_text = "".join(
-        block.text for block in message.content if hasattr(block, "text")
-    ).strip()
-
+    response_text = _llm.chat(provider, api_key, model, system, prompt,
+                              max_tokens=16000, cache_system=(provider == "anthropic"))
     return _parse_json_response(response_text)
 
 
