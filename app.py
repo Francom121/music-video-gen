@@ -406,7 +406,7 @@ with st.sidebar:
         ck = f"char_{ci}"
         st.markdown(f'<p class="lbl" style="margin-top:.6rem;margin-bottom:.3rem">{char_labels[ci]}</p>', unsafe_allow_html=True)
         uploaded = st.file_uploader(
-            f"char_{ci}_file",
+            " ",
             type=["jpg","jpeg","png","webp"],
             label_visibility="collapsed",
             key=f"{ck}_upload",
@@ -457,7 +457,7 @@ with st.sidebar:
     st.divider()
     st.markdown('<p class="lbl">🎨 Style Reference Image</p>', unsafe_allow_html=True)
     st.markdown('<p style="color:rgba(148,112,255,.4);font-size:.72rem;margin-bottom:.4rem;line-height:1.45">Upload a mood board, film still, or artwork — Claude extracts the visual style.</p>', unsafe_allow_html=True)
-    style_ref_img = st.file_uploader("Style reference", type=["jpg","jpeg","png","webp"],
+    style_ref_img = st.file_uploader(" ", type=["jpg","jpeg","png","webp"],
                                      label_visibility="collapsed", key="style_ref_upload")
     if style_ref_img is not None:
         style_ref_desc = _vision_describe(
@@ -484,7 +484,7 @@ with st.sidebar:
     # ── Location / Environment Reference ──────────────────────────────────
     st.markdown('<p class="lbl" style="margin-top:.75rem">📍 Location / Environment</p>', unsafe_allow_html=True)
     st.markdown('<p style="color:rgba(148,112,255,.4);font-size:.72rem;margin-bottom:.4rem;line-height:1.45">Upload a photo of a place or environment — Claude describes it for use as the world setting.</p>', unsafe_allow_html=True)
-    location_img = st.file_uploader("Location reference", type=["jpg","jpeg","png","webp"],
+    location_img = st.file_uploader(" ", type=["jpg","jpeg","png","webp"],
                                     label_visibility="collapsed", key="location_upload")
     if location_img is not None:
         location_desc = _vision_describe(
